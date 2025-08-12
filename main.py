@@ -243,7 +243,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # 动态从文件路径加载模块
             spec = importlib.util.spec_from_file_location(tool_name, tool_module_path)
             tool_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tool_module)
@@ -251,32 +250,28 @@ class MainWindow(QMainWindow):
             if hasattr(tool_module, 'get_config_widget'):
                 config_widget = tool_module.get_config_widget()
 
-                # 创建对话框
+                if hasattr(config_widget, 'load_config'):
+                    config_widget.load_config(node.config)
+
                 dialog = QDialog(self)
                 dialog.setWindowTitle(f"配置: {tool_name}")
-
                 layout = QVBoxLayout(dialog)
                 layout.addWidget(config_widget)
-
-                # 添加 OK 和 Cancel 按钮
                 button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
                 button_box.accepted.connect(dialog.accept)
                 button_box.rejected.connect(dialog.reject)
                 layout.addWidget(button_box)
 
-                # TODO: 在此加载节点现有配置到config_widget
-                # e.g., config_widget.load_settings(node.get_config())
-
                 if dialog.exec_() == QDialog.Accepted:
-                    # TODO: 在此从config_widget中获取设置并保存
-                    # e.g., node.set_config(config_widget.get_settings())
-                    print(f"配置已为节点 {node.id} 保存 (模拟)")
+                    if hasattr(config_widget, 'get_config'):
+                        node.config = config_widget.get_config()
+                        print(f"配置已为节点 {node.id} 保存。")
+                    else:
+                        print(f"警告: {tool_name} 的配置模块没有 get_config 方法，配置未保存。")
                 else:
-                    print(f"节点 {node.id} 的配置已取消")
-
+                    print(f"节点 {node.id} 的配置已取消。")
             else:
                 QMessageBox.information(self, "无配置", f"工具 '{tool_name}' 没有提供配置界面。")
-
         except Exception as e:
             QMessageBox.critical(self, "加载错误", f"加载工具 '{tool_name}' 时出错:\n{e}")
 
@@ -353,7 +348,8 @@ class MainWindow(QMainWindow):
                 spec.loader.exec_module(tool_module)
 
                 if hasattr(tool_module, 'run'):
-                    tool_module.run(input_path=input_path, output_path=output_path)
+                    # 将config字典传递给run函数
+                    tool_module.run(input_path=input_path, output_path=output_path, config_data=node.config)
                     node_outputs[node.id] = output_path
                     print(f"<<< 节点 {node.name} 执行成功")
                 else:
@@ -395,7 +391,8 @@ class MainWindow(QMainWindow):
                 workflow_data['nodes'].append({
                     'id': node.id,
                     'name': node.name,
-                    'pos': [node.pos().x(), node.pos().y()]
+                    'pos': [node.pos().x(), node.pos().y()],
+                    'config': node.config  # 保存配置
                 })
 
             for conn in connections:
@@ -429,6 +426,7 @@ class MainWindow(QMainWindow):
             for node_data in workflow_data.get('nodes', []):
                 node = Node(name=node_data['name'])
                 node.id = node_data['id'] # 恢复ID
+                node.config = node_data.get('config', {}) # 恢复配置
                 node.setPos(QPointF(*node_data['pos']))
                 self.scene.addItem(node)
                 nodes_map[node.id] = node

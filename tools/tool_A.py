@@ -20,12 +20,13 @@ def get_config_widget():
     return widget
 
 
-def run(input_path, output_path):
+def run(input_path, output_path, config_data):
     """
     工具的虚拟运行函数。
     在真实的工具中，这里会执行具体的操作。
     """
     print(f"正在运行工具A：输入 {input_path}，输出 {output_path}")
+    print(f"    接收到的配置: {config_data}")
     # 模拟工作
     with open(output_path, 'w') as f:
         f.write(f"由工具A处理，源文件: {input_path}")

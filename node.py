@@ -40,6 +40,7 @@ class Node(QGraphicsItem):
         super().__init__(parent)
         self.name = name
         self.id = str(uuid.uuid4().hex)
+        self.config = {} # 用于存储此节点的特定配置
 
         # 设置标志，使节点可移动、可选择，并发送几何变化信号
         self.setFlag(QGraphicsItem.ItemIsMovable)
