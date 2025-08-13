@@ -5,10 +5,16 @@ Main UI definition for the Visual Workflow Editor application.
 """
 
 import sys
+import os
+import importlib.util
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
                              QListWidget, QGraphicsView, QGraphicsScene,
-                             QSplitter, QStatusBar, QMessageBox)
+                             QSplitter, QStatusBar, QMessageBox, QAbstractItemView)
 from PyQt6.QtCore import Qt
+
+# Import the new V2 components
+from graphics_view import WorkflowGraphicsView
+from node import Node
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -42,10 +48,14 @@ class MainWindow(QMainWindow):
 
         # Left panel: Tool list
         self.tool_list = QListWidget()
+        self.tool_list.setDragEnabled(True)
+        self.tool_list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.tool_list.itemDoubleClicked.connect(self.add_node_from_item)
 
         # Center panel: Workflow canvas
         self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
+        self.scene.setSceneRect(-2000, -2000, 4000, 4000)
+        self.view = WorkflowGraphicsView(self.scene, self)
 
         # Right panel: Saved workflow list
         self.workflow_list = QListWidget()
@@ -108,6 +118,54 @@ class MainWindow(QMainWindow):
         # TODO: Implement file dialog to open an existing .wf file and load it.
         self.main_widget.setEnabled(True)
         self.statusBar().showMessage("工作流已加载 (模拟)", 5000)
+
+    def add_node_from_item(self, item):
+        """Adds a new node to the center of the view when an item is double-clicked."""
+        if not item.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return
+        node = self.create_node_for_tool(item.text())
+        if node:
+            center_pos = self.view.mapToScene(self.view.viewport().rect().center())
+            node.setPos(center_pos)
+            self.scene.addItem(node)
+
+    def create_node_for_tool(self, tool_name):
+        """
+        Creates a Node instance for a given tool name, dynamically adding sockets
+        based on the tool's definition.
+        """
+        # This will be implemented in the next phase (decoupling)
+        # For now, we assume app_root is available.
+        app_root = os.path.dirname(os.path.abspath(__file__))
+        tool_module_path = os.path.join(app_root, 'tools', f"{tool_name}.py")
+
+        if not os.path.exists(tool_module_path):
+            QMessageBox.critical(self, "错误", f"找不到工具模块: {tool_module_path}")
+            return None
+
+        try:
+            spec = importlib.util.spec_from_file_location(tool_name, tool_module_path)
+            tool_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tool_module)
+
+            node = Node(tool_name)
+
+            if hasattr(tool_module, 'get_tool_definition'):
+                definition = tool_module.get_tool_definition()
+                for name in definition.get('inputs', {}):
+                    node.add_socket(name, is_output=False)
+                for name in definition.get('outputs', {}):
+                    node.add_socket(name, is_output=True)
+            else:
+                # Add default sockets if no definition is provided
+                node.add_socket("in", is_output=False)
+                node.add_socket("out", is_output=True)
+
+            return node
+
+        except Exception as e:
+            QMessageBox.critical(self, "加载工具出错", f"加载工具 '{tool_name}' 时出错:\n{e}")
+            return None
 
     def closeEvent(self, event):
         """Overrides the default close event to ask for saving."""
