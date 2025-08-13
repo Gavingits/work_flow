@@ -8,6 +8,9 @@ import sys
 import os
 import importlib.util
 import json
+import shutil
+from datetime import datetime
+from collections import deque
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
                              QListWidget, QGraphicsView, QGraphicsScene,
                              QSplitter, QStatusBar, QMessageBox, QAbstractItemView,
@@ -38,6 +41,7 @@ class MainWindow(QMainWindow):
         # The window is shown, but the main content area is kept disabled
         # until a workflow is properly established (new or opened).
         self.create_menus()
+        self.discover_tools()
         self.show()
         # Use a timer to allow the event loop to start before showing a modal dialog.
         # This is a common pattern in PyQt to avoid issues on some platforms.
@@ -108,6 +112,11 @@ class MainWindow(QMainWindow):
 
         exit_action = file_menu.addAction("退出")
         exit_action.triggered.connect(self.close)
+
+        # --- Workflow Menu ---
+        workflow_menu = menubar.addMenu("工作流")
+        run_action = workflow_menu.addAction("运行")
+        run_action.triggered.connect(self.execute_workflow)
 
     def prompt_for_workflow(self):
         """
@@ -319,6 +328,122 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "加载工具出错", f"加载工具 '{tool_name}' 时出错:\n{e}")
             return None
+
+    def discover_tools(self):
+        """Discovers tools in the application's 'tools' directory."""
+        self.tool_list.clear()
+        tools_dir = os.path.join(self.app_root, 'tools')
+        if not os.path.isdir(tools_dir):
+            QMessageBox.warning(self, "警告", f"程序根目录下未找到 'tools' 文件夹。\n路径: {tools_dir}")
+            return
+
+        tools_found = False
+        for item_name in os.listdir(tools_dir):
+            item_path = os.path.join(tools_dir, item_name)
+            # A tool is a directory containing a python file of the same name
+            if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, f"{item_name}.py")):
+                self.tool_list.addItem(item_name)
+                tools_found = True
+
+        if not tools_found:
+            self.tool_list.addItem("未找到工具").setEnabled(False)
+
+    def execute_workflow(self):
+        """Parses the graph and executes the workflow in order."""
+        if not self.current_workflow_path:
+            QMessageBox.warning(self, "错误", "请先新建或打开一个工作流项目。")
+            return
+
+        print("--- 开始执行工作流 ---")
+        QApplication.processEvents() # Update UI
+
+        nodes_map = {item.id: item for item in self.scene.items() if isinstance(item, Node)}
+        if not nodes_map:
+            QMessageBox.information(self, "提示", "工作流为空，无需执行。")
+            return
+
+        # Build graph for topological sort
+        adj = {node_id: [] for node_id in nodes_map}
+        in_degree = {node_id: 0 for node_id in nodes_map}
+        for item in self.scene.items():
+            if isinstance(item, Connection):
+                start_id, end_id = item.start_socket.node.id, item.end_socket.node.id
+                if start_id in adj and end_id in in_degree:
+                    adj[start_id].append(end_id)
+                    in_degree[end_id] += 1
+
+        queue = deque([node_id for node_id in nodes_map if in_degree[node_id] == 0])
+        execution_order = []
+        while queue:
+            node_id = queue.popleft()
+            execution_order.append(node_id)
+            for neighbor_id in adj[node_id]:
+                in_degree[neighbor_id] -= 1
+                if in_degree[neighbor_id] == 0:
+                    queue.append(neighbor_id)
+
+        if len(execution_order) != len(nodes_map):
+            QMessageBox.critical(self, "错误", "工作流中存在循环，无法执行。")
+            return
+
+        # Set up temp directory for this run
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = os.path.join(self.current_workflow_path, f".run_{run_timestamp}")
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
+        print(f"创建临时运行目录: {temp_dir}")
+
+        # Execute nodes
+        all_outputs = {} # { (node_id, socket_name): path }
+        success = True
+        for node_id in execution_order:
+            node = nodes_map[node_id]
+            node.set_status('running')
+            QApplication.processEvents()
+
+            try:
+                # Prepare inputs for the current node
+                input_paths = {}
+                for in_socket in node.inputs:
+                    if in_socket.connection:
+                        start_socket = in_socket.connection.start_socket
+                        input_key = (start_socket.node.id, start_socket.socket_name)
+                        if input_key in all_outputs:
+                            input_paths[in_socket.socket_name] = all_outputs[input_key]
+
+                # Prepare outputs for the current node
+                output_paths = {}
+                for out_socket in node.outputs:
+                    # Create a unique path for each output socket
+                    path = os.path.join(temp_dir, f"{node.id}_{out_socket.socket_name}.dat")
+                    output_paths[out_socket.socket_name] = path
+
+                # Load and run the tool
+                tool_module_path = os.path.join(self.app_root, 'tools', node.node_name, f"{node.node_name}.py")
+                spec = importlib.util.spec_from_file_location(node.node_name, tool_module_path)
+                tool_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(tool_module)
+
+                print(f"\n>>> 正在执行: {node.node_name}")
+                tool_module.run(input_paths=input_paths, output_paths=output_paths, config_data=node.config)
+
+                # Store this node's outputs for downstream nodes
+                for name, path in output_paths.items():
+                    all_outputs[(node.id, name)] = path
+
+                node.set_status('done')
+                QApplication.processEvents()
+
+            except Exception as e:
+                node.set_status('error')
+                QMessageBox.critical(self, "执行出错", f"执行节点 '{node.node_name}' 时发生错误:\n\n{e}")
+                print(f"--- 工作流执行失败 --- \n节点 {node.node_name} 出错: {e}")
+                success = False
+                break # Stop execution on failure
+
+        if success:
+            QMessageBox.information(self, "成功", f"工作流执行完毕！\n中间文件保存在:\n{temp_dir}")
+            print("\n--- 工作流执行成功 ---")
 
     def closeEvent(self, event):
         """Overrides the default close event to ask for saving."""
