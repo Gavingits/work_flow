@@ -266,9 +266,9 @@ class MainWindow(QMainWindow):
             return
 
         tool_name = node.node_name
-        tool_module_path = os.path.join(self.app_root, 'tools', f"{tool_name}.py")
+        tool_module_path = os.path.join(self.app_root, 'tools', tool_name, f"{tool_name}.py")
         if not os.path.exists(tool_module_path):
-            QMessageBox.critical(self, "错误", f"找不到工具模块: {tool_module_path}")
+            QMessageBox.critical(self, "错误", f"找不到工具主文件: {tool_module_path}")
             return
 
         try:
@@ -305,9 +305,9 @@ class MainWindow(QMainWindow):
         Creates a Node instance for a given tool name, dynamically adding sockets
         based on the tool's definition.
         """
-        tool_module_path = os.path.join(self.app_root, 'tools', f"{tool_name}.py")
+        tool_module_path = os.path.join(self.app_root, 'tools', tool_name, f"{tool_name}.py")
         if not os.path.exists(tool_module_path):
-            QMessageBox.critical(self, "错误", f"找不到工具模块: {tool_module_path}")
+            QMessageBox.critical(self, "错误", f"找不到工具主文件: {tool_module_path}")
             return None
 
         try:
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
         tools_found = False
         for item_name in os.listdir(tools_dir):
             item_path = os.path.join(tools_dir, item_name)
-            # A tool is a directory containing a python file of the same name
+            # A tool is a directory containing a python file of the same name, e.g., tools/MyTool/MyTool.py
             if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, f"{item_name}.py")):
                 self.tool_list.addItem(item_name)
                 tools_found = True
@@ -361,6 +361,10 @@ class MainWindow(QMainWindow):
         if not nodes_map:
             QMessageBox.information(self, "提示", "工作流为空，无需执行。")
             return
+
+        # Reset all node statuses before run
+        for node in nodes_map.values():
+            node.set_status('waiting')
 
         # Build graph for topological sort
         adj = {node_id: [] for node_id in nodes_map}
@@ -414,7 +418,6 @@ class MainWindow(QMainWindow):
                 # Prepare outputs for the current node
                 output_paths = {}
                 for out_socket in node.outputs:
-                    # Create a unique path for each output socket
                     path = os.path.join(temp_dir, f"{node.id}_{out_socket.socket_name}.dat")
                     output_paths[out_socket.socket_name] = path
 
@@ -427,7 +430,6 @@ class MainWindow(QMainWindow):
                 print(f"\n>>> 正在执行: {node.node_name}")
                 tool_module.run(input_paths=input_paths, output_paths=output_paths, config_data=node.config)
 
-                # Store this node's outputs for downstream nodes
                 for name, path in output_paths.items():
                     all_outputs[(node.id, name)] = path
 
@@ -439,7 +441,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "执行出错", f"执行节点 '{node.node_name}' 时发生错误:\n\n{e}")
                 print(f"--- 工作流执行失败 --- \n节点 {node.node_name} 出错: {e}")
                 success = False
-                break # Stop execution on failure
+                break
 
         if success:
             QMessageBox.information(self, "成功", f"工作流执行完毕！\n中间文件保存在:\n{temp_dir}")
