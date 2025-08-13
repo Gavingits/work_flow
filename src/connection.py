@@ -57,3 +57,12 @@ class Connection(QGraphicsPathItem):
 
         if self.scene():
             self.scene().removeItem(self)
+
+    def serialize(self):
+        """Returns a dictionary representation of the connection."""
+        return {
+            'start_node_id': self.start_socket.node.id,
+            'start_socket_index': self.start_socket.index,
+            'end_node_id': self.end_socket.node.id,
+            'end_socket_index': self.end_socket.index,
+        }

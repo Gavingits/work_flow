@@ -7,14 +7,18 @@ Main UI definition for the Visual Workflow Editor application.
 import sys
 import os
 import importlib.util
+import json
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
                              QListWidget, QGraphicsView, QGraphicsScene,
-                             QSplitter, QStatusBar, QMessageBox, QAbstractItemView)
-from PyQt6.QtCore import Qt
+                             QSplitter, QStatusBar, QMessageBox, QAbstractItemView,
+                             QFileDialog)
+from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
 
 # Import the new V2 components
 from graphics_view import WorkflowGraphicsView
 from node import Node
+from connection import Connection
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -26,11 +30,14 @@ class MainWindow(QMainWindow):
         self.current_workflow_file = None
         # This will hold the path to the directory containing the .wf file
         self.current_workflow_path = None
+        # The root directory of the application itself
+        self.app_root = os.path.dirname(os.path.abspath(__file__))
 
         self.init_ui()
 
         # The window is shown, but the main content area is kept disabled
         # until a workflow is properly established (new or opened).
+        self.create_menus()
         self.show()
         # Use a timer to allow the event loop to start before showing a modal dialog.
         # This is a common pattern in PyQt to avoid issues on some platforms.
@@ -80,6 +87,28 @@ class MainWindow(QMainWindow):
         # Start with the main UI disabled. It will be enabled upon creating/opening a workflow.
         self.main_widget.setEnabled(False)
 
+    def create_menus(self):
+        """Creates the main menu bar for the application."""
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu('文件')
+
+        new_action = file_menu.addAction("新建工作流...")
+        new_action.triggered.connect(self.new_workflow)
+
+        open_action = file_menu.addAction("打开工作流...")
+        open_action.triggered.connect(self.open_workflow)
+
+        save_action = file_menu.addAction("保存工作流")
+        save_action.triggered.connect(self.on_save_workflow)
+
+        save_as_action = file_menu.addAction("另存为...")
+        save_as_action.triggered.connect(self.on_save_workflow_as)
+
+        file_menu.addSeparator()
+
+        exit_action = file_menu.addAction("退出")
+        exit_action.triggered.connect(self.close)
+
     def prompt_for_workflow(self):
         """
         Presents the initial "New" or "Open" dialog to the user at startup.
@@ -106,21 +135,113 @@ class MainWindow(QMainWindow):
 
     def new_workflow(self):
         """Handles the action for creating a new workflow."""
-        print("Action: New Workflow")
-        # TODO: Implement file dialog to create a new .wf file and set paths.
-        # For now, just enable the UI to show it works.
+        filepath, _ = QFileDialog.getSaveFileName(self, "新建工作流文件", "", "Workflow Files (*.wf)")
+
+        if not filepath:
+            # If the user cancels the initial dialog, we should probably close.
+            # But if they cancel from the menu, we do nothing.
+            # For now, we just return.
+            return
+
+        self.scene.clear() # Clear any existing workflow
+        self.current_workflow_file = filepath
+        self.current_workflow_path = os.path.dirname(filepath)
+
+        # Create the node_configs directory
+        node_configs_dir = os.path.join(self.current_workflow_path, "node_configs")
+        os.makedirs(node_configs_dir, exist_ok=True)
+
+        # Save an empty workflow to establish the file
+        with open(self.current_workflow_file, 'w') as f:
+            json.dump({'nodes': [], 'connections': []}, f)
+
+        self.update_window_title()
         self.main_widget.setEnabled(True)
-        self.statusBar().showMessage("新工作流已创建 (未保存)", 5000)
+        self.statusBar().showMessage(f"已创建新工作流: {self.current_workflow_file}", 5000)
 
     def open_workflow(self):
-        """Handles the action for opening an existing workflow."""
-        print("Action: Open Workflow")
-        # TODO: Implement file dialog to open an existing .wf file and load it.
-        self.main_widget.setEnabled(True)
-        self.statusBar().showMessage("工作流已加载 (模拟)", 5000)
+        """Handles the action for opening an existing workflow file."""
+        filepath, _ = QFileDialog.getOpenFileName(self, "打开工作流文件", "", "Workflow Files (*.wf)")
+        if filepath:
+            self.load_workflow_from_file(filepath)
+
+    def on_save_workflow(self):
+        """Handles the 'Save' menu action."""
+        if not self.current_workflow_file:
+            self.on_save_workflow_as()
+        else:
+            self.save_workflow_to_file(self.current_workflow_file)
+
+    def on_save_workflow_as(self):
+        """Handles the 'Save As' action."""
+        filepath, _ = QFileDialog.getSaveFileName(self, "保存工作流文件", "", "Workflow Files (*.wf)")
+        if filepath:
+            self.save_workflow_to_file(filepath)
+
+    def save_workflow_to_file(self, filepath):
+        """Saves the current scene and all node configs to files."""
+        self.current_workflow_file = filepath
+        self.current_workflow_path = os.path.dirname(filepath)
+        try:
+            nodes_data, connections_data = [], []
+            for item in self.scene.items():
+                if isinstance(item, Node):
+                    nodes_data.append(item.serialize())
+                    item.save_config(self.current_workflow_path)
+                elif isinstance(item, Connection):
+                    connections_data.append(item.serialize())
+            workflow_data = {'nodes': nodes_data, 'connections': connections_data}
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(workflow_data, f, indent=4)
+            self.update_window_title()
+            self.statusBar().showMessage(f"工作流已保存到 {filepath}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"保存工作流时出错:\n{e}")
+
+    def load_workflow_from_file(self, filepath):
+        """Loads a workflow from a .wf file and associated node configs."""
+        self.scene.clear()
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                workflow_data = json.load(f)
+            self.current_workflow_file = filepath
+            self.current_workflow_path = os.path.dirname(filepath)
+            nodes_map = {}
+            for node_data in workflow_data.get('nodes', []):
+                node = self.create_node_for_tool(node_data['tool_name'])
+                if node:
+                    node.deserialize(node_data)
+                    node.load_config(self.current_workflow_path)
+                    self.scene.addItem(node)
+                    nodes_map[node.id] = node
+            for conn_data in workflow_data.get('connections', []):
+                start_node, end_node = nodes_map.get(conn_data['start_node_id']), nodes_map.get(conn_data['end_node_id'])
+                start_socket_idx, end_socket_idx = conn_data['start_socket_index'], conn_data['end_socket_index']
+                if start_node and end_node and start_socket_idx < len(start_node.outputs) and end_socket_idx < len(end_node.inputs):
+                    start_socket, end_socket = start_node.outputs[start_socket_idx], end_node.inputs[end_socket_idx]
+                    self.scene.addItem(Connection(start_socket, end_socket))
+            self.main_widget.setEnabled(True)
+            self.update_window_title()
+            self.statusBar().showMessage(f"已加载工作流: {filepath}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "加载失败", f"加载工作流时出错:\n{e}")
+            self.scene.clear()
+            self.current_workflow_file, self.current_workflow_path = None, None
+            self.main_widget.setEnabled(False)
+            self.update_window_title()
+
+    def update_window_title(self):
+        """Updates the window title with the current workflow file."""
+        title = "可视化工作流编辑器"
+        if self.current_workflow_file:
+            title += f" - {os.path.basename(self.current_workflow_file)}"
+        self.setWindowTitle(title)
 
     def add_node_from_item(self, item):
         """Adds a new node to the center of the view when an item is double-clicked."""
+        if not self.main_widget.isEnabled():
+            QMessageBox.warning(self, "提示", "请先新建或打开一个工作流。")
+            return
         if not item.flags() & Qt.ItemFlag.ItemIsEnabled:
             return
         node = self.create_node_for_tool(item.text())
@@ -129,16 +250,53 @@ class MainWindow(QMainWindow):
             node.setPos(center_pos)
             self.scene.addItem(node)
 
+    def open_node_config_dialog(self, node):
+        """Opens the config dialog for a node and saves the config on accept."""
+        if not self.current_workflow_path:
+            QMessageBox.warning(self, "错误", "无有效的工作流路径。请先保存工作流。")
+            return
+
+        tool_name = node.node_name
+        tool_module_path = os.path.join(self.app_root, 'tools', f"{tool_name}.py")
+        if not os.path.exists(tool_module_path):
+            QMessageBox.critical(self, "错误", f"找不到工具模块: {tool_module_path}")
+            return
+
+        try:
+            spec = importlib.util.spec_from_file_location(tool_name, tool_module_path)
+            tool_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tool_module)
+            if not hasattr(tool_module, 'get_config_widget'):
+                QMessageBox.information(self, "无配置", f"工具 '{tool_name}' 没有提供配置界面。")
+                return
+
+            config_widget = tool_module.get_config_widget()
+            if hasattr(config_widget, 'load_config'):
+                config_widget.load_config(node.config)
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"配置: {tool_name}")
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(config_widget)
+            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                if hasattr(config_widget, 'get_config'):
+                    node.config = config_widget.get_config()
+                    node.save_config(self.current_workflow_path) # Auto-save on accept
+                    print(f"配置已为节点 {node.id} 更新并保存。")
+        except Exception as e:
+            QMessageBox.critical(self, "加载错误", f"加载工具 '{tool_name}' 的配置UI时出错:\n{e}")
+
     def create_node_for_tool(self, tool_name):
         """
         Creates a Node instance for a given tool name, dynamically adding sockets
         based on the tool's definition.
         """
-        # This will be implemented in the next phase (decoupling)
-        # For now, we assume app_root is available.
-        app_root = os.path.dirname(os.path.abspath(__file__))
-        tool_module_path = os.path.join(app_root, 'tools', f"{tool_name}.py")
-
+        tool_module_path = os.path.join(self.app_root, 'tools', f"{tool_name}.py")
         if not os.path.exists(tool_module_path):
             QMessageBox.critical(self, "错误", f"找不到工具模块: {tool_module_path}")
             return None
@@ -147,9 +305,7 @@ class MainWindow(QMainWindow):
             spec = importlib.util.spec_from_file_location(tool_name, tool_module_path)
             tool_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tool_module)
-
             node = Node(tool_name)
-
             if hasattr(tool_module, 'get_tool_definition'):
                 definition = tool_module.get_tool_definition()
                 for name in definition.get('inputs', {}):
@@ -157,12 +313,9 @@ class MainWindow(QMainWindow):
                 for name in definition.get('outputs', {}):
                     node.add_socket(name, is_output=True)
             else:
-                # Add default sockets if no definition is provided
                 node.add_socket("in", is_output=False)
                 node.add_socket("out", is_output=True)
-
             return node
-
         except Exception as e:
             QMessageBox.critical(self, "加载工具出错", f"加载工具 '{tool_name}' 时出错:\n{e}")
             return None

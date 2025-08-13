@@ -3,6 +3,8 @@
 Defines the graphical Node and Socket items for the workflow canvas.
 """
 import uuid
+import os
+import json
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsTextItem, QGraphicsProxyWidget
 from PyQt6.QtGui import QBrush, QPen, QColor, QPainterPath, QFont, QPolygonF
 from PyQt6.QtCore import QRectF, Qt, QPointF
@@ -168,3 +170,45 @@ class Node(QGraphicsItem):
         if hasattr(view, 'on_node_double_clicked'):
             view.on_node_double_clicked(self)
         super().mouseDoubleClickEvent(event)
+
+    def serialize(self):
+        """Returns a dictionary representation of the node for saving."""
+        return {
+            'id': self.id,
+            'tool_name': self.node_name,
+            'pos': [self.pos().x(), self.pos().y()],
+        }
+
+    def deserialize(self, data):
+        """Sets the node's properties from a dictionary."""
+        self.id = data['id']
+        # self.node_name is set at creation, so no need to change
+        self.setPos(QPointF(*data['pos']))
+
+    def get_config_filepath(self, workflow_path):
+        """Constructs the full path for this node's config file."""
+        return os.path.join(workflow_path, "node_configs", f"{self.id}.json")
+
+    def save_config(self, workflow_path):
+        """Saves the node's config dictionary to its file."""
+        filepath = self.get_config_filepath(workflow_path)
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4)
+            print(f"Saved config for node {self.id} to {filepath}")
+        except IOError as e:
+            print(f"Error saving config for node {self.id}: {e}")
+
+    def load_config(self, workflow_path):
+        """Loads the node's config dictionary from its file."""
+        filepath = self.get_config_filepath(workflow_path)
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+                print(f"Loaded config for node {self.id} from {filepath}")
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"Error loading config for node {self.id}: {e}")
+                self.config = {} # Reset to default on error
+        else:
+            self.config = {} # No config file exists yet
